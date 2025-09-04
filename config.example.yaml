@@ -1,0 +1,27 @@
+# Contoh konfigurasi YAML untuk biometric-sync
+# Simpan salinan real di: /etc/biometric-sync.yaml
+# Jangan commit file berisi data sensitif ke repo
+
+devices:
+    - name: ZKP01
+      host: 192.168.100.180
+      port: 4370
+      punch_direction: AUTO
+      clear_on_fetch: false
+    - name: ZKP02
+      host: 192.168.100.176
+      port: 43700
+      punch_direction: AUTO
+      clear_on_fetch: false
+
+erp:
+    url: https://erp.example/api
+    token_env: ERP_TOKEN # ENV var berisi "API_KEY:API_SECRET"
+
+# Ops defaults
+pull_frequency: 60 # detik
+logs_dir: logs
+import_start_date: null # contoh: "20240901"
+erpnext_version: 15
+allowed_exceptions: [1, 2, 3]
+shift_type_device_mapping: []
