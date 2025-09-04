@@ -14,6 +14,10 @@ from logging.handlers import RotatingFileHandler
 from pickledb import PickleDB
 from zk import ZK, const
 
+# ===== Ops flags (dikendalikan via ENV /etc/biometric-sync.env) ======
+ZK_DISABLE_ON_FETCH = os.getenv("ZK_DISABLE_ON_FETCH", "0").lower() in ("1", "true", "yes", "no")
+SKIP_PING = os.getenv("ZK_SKIP_PING", "").lower() in ("1", "true", "yes", "on")
+
 EMPLOYEE_NOT_FOUND_ERROR_MESSAGE = "No Employee found for the given employee field value"
 EMPLOYEE_INACTIVE_ERROR_MESSAGE = "Transactions cannot be created for an Inactive Employee"
 DUPLICATE_EMPLOYEE_CHECKIN_ERROR_MESSAGE = "This employee already has a log with the same timestamp"
@@ -92,7 +96,12 @@ def pull_process_and_push_data(device, device_attendance_logs=None):
     attendance_success_logger = setup_logger(attendance_success_log_file, '/'.join([config.LOGS_DIRECTORY, attendance_success_log_file])+'.log')
     attendance_failed_logger = setup_logger(attendance_failed_log_file, '/'.join([config.LOGS_DIRECTORY, attendance_failed_log_file])+'.log')
     if not device_attendance_logs:
-        device_attendance_logs = get_all_attendance_from_device(device['ip'], device_id=device['device_id'], clear_from_device_on_fetch=device['clear_from_device_on_fetch'])
+        device_attendance_logs = get_all_attendance_from_device(
+            device['ip'],
+            port=int(device.get('port', 4370))
+            device_id=device['device_id'],
+            clear_from_device_on_fetch=device['clear_from_device_on_fetch']
+        )
         if not device_attendance_logs:
             return
     # for finding the last successfull push and restart from that point (or) from a set 'config.IMPORT_START_DATE' (whichever is later)
@@ -153,9 +162,11 @@ def get_all_attendance_from_device(ip, port=4370, timeout=30, device_id=None, cl
     attendances = []
     try:
         conn = zk.connect()
-        x = conn.disable_device()
-        # device is disabled when fetching data
-        info_logger.info("\t".join((ip, "Device Disable Attempted. Result:", str(x))))
+        # Opsional: disable device selama fetch (kontrol via ENV)
+        if not ZK_DISABLE_ON_FETCH:
+            x = conn.disable_device()
+            info_logger.info("\t".join((ip, "Device Disable Attempted. Result:", str(x))))
+            
         attendances = conn.get_attendance()
         info_logger.info("\t".join((ip, "Attendances Fetched:", str(len(attendances)))))
         status.set(f'{device_id}_push_timestamp', None)
@@ -170,14 +181,18 @@ def get_all_attendance_from_device(ip, port=4370, timeout=30, device_id=None, cl
             if clear_from_device_on_fetch:
                 x = conn.clear_attendance()
                 info_logger.info("\t".join((ip, "Attendance Clear Attempted. Result:", str(x))))
-        x = conn.enable_device()
-        info_logger.info("\t".join((ip, "Device Enable Attempted. Result:", str(x))))
-    except:
-        error_logger.exception(str(ip)+' exception when fetching from device...')
+        if not ZK_DISABLE_ON_FETCH:
+            x = conn.enable_device()
+            info_logger.info("\t".join((ip, "Device Enable Attempted. Result:", str(x))))
+
+    except Exception as e:
+        error_logger.exception("\t".join([ip, f"exception when fetching from device (port={port})...", repr(e)]))
         raise Exception('Device fetch failed.')
+
     finally:
         if conn:
             conn.disconnect()
+
     return list(map(lambda x: x.__dict__, attendances))
 
 
