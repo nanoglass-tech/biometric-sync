@@ -1,6 +1,6 @@
 try:
     from config_runtime import config
-except Exception:
+except FileNotFoundError:
     import local_config as config
 
 import requests
