@@ -1,5 +1,8 @@
+try:
+    from config_runtime import config
+except Exception:
+    import local_config as config
 
-import local_config as config
 import requests
 import datetime
 import json
