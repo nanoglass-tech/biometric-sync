@@ -1,4 +1,6 @@
 requests
 pickledb
-pyzk
+pyzk @ git+https://github.com/nanoglass-tech/pyzk@v0.6.0-ng1
 PyQt5
+python-dotenv
+PyYAML

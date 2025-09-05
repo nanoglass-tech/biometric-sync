@@ -1,5 +1,9 @@
 
-import local_config as config
+try:
+    import config_loader as _cfg
+    config = _cfg.load()
+except:
+    import local_config as config
 import requests
 import datetime
 import json
@@ -89,7 +93,12 @@ def pull_process_and_push_data(device, device_attendance_logs=None):
     attendance_success_logger = setup_logger(attendance_success_log_file, '/'.join([config.LOGS_DIRECTORY, attendance_success_log_file])+'.log')
     attendance_failed_logger = setup_logger(attendance_failed_log_file, '/'.join([config.LOGS_DIRECTORY, attendance_failed_log_file])+'.log')
     if not device_attendance_logs:
-        device_attendance_logs = get_all_attendance_from_device(device['ip'], device_id=device['device_id'], clear_from_device_on_fetch=device['clear_from_device_on_fetch'])
+        device_attendance_logs = get_all_attendance_from_device(
+            device['ip'],
+            port=int(device.get('port', 4370)),
+            device_id=device['device_id'],
+            clear_from_device_on_fetch=device['clear_from_device_on_fetch']
+        )
         if not device_attendance_logs:
             return
     # for finding the last successfull push and restart from that point (or) from a set 'config.IMPORT_START_DATE' (whichever is later)
