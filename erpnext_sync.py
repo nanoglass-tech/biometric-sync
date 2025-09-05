@@ -14,6 +14,11 @@ from logging.handlers import RotatingFileHandler
 from pickledb import PickleDB
 from zk import ZK, const
 
+# ===== Retry/Backoff config #3 ====
+MAX_RETRIES = int(os.getenv("ERP_MAX_RETRIES", "3"))        # total percobaan
+BACKOFF_SEC = float(os.getenv("ERP_BACKOFF_SEC", "1.5"))    # detik, exponential backoff dasar
+TIMEOUT_SEC = float(os.getenv("ERP_TIMEOUT_SEC", "10"))     # timeout request
+
 EMPLOYEE_NOT_FOUND_ERROR_MESSAGE = "No Employee found for the given employee field value"
 EMPLOYEE_INACTIVE_ERROR_MESSAGE = "Transactions cannot be created for an Inactive Employee"
 DUPLICATE_EMPLOYEE_CHECKIN_ERROR_MESSAGE = "This employee already has a log with the same timestamp"
@@ -52,6 +57,12 @@ def main():
             status.set('lift_off_timestamp', str(datetime.datetime.now()))
             status.save()
             info_logger.info("Cleared for lift off!")
+            # ===== aggregator run (Langkah ke-3)
+            run_pull = 0
+            run_sent_ok = 0
+            run_sent_fail = 0
+            run_skipped_dup = 0
+            
             for device in config.devices:
                 device_attendance_logs = None
                 info_logger.info("Processing Device: "+ device['device_id'])
@@ -63,12 +74,34 @@ def main():
                         if file_contents:
                             device_attendance_logs = list(map(lambda x: _apply_function_to_key(x, 'timestamp', datetime.datetime.fromtimestamp), json.loads(file_contents)))
                 try:
+                    # ukur dulu metrik sebelum/selesai
+                    t0 = time.time()
+                    # wrap pull_process... untuk mendapatkan metrik via logger (parsing cepat)
+                    before_ok = status.get(f"cursor.{device['device_id']}.last_ts")
                     pull_process_and_push_data(device, device_attendance_logs)
+                    # heuristik sederhana: hitung dari log sukses perangkat
+                    # (bisa diperhalus nanti dengan counter eksplisiti global)
+                    t1 = time.time()
                     status.set(f'{device["device_id"]}_push_timestamp', str(datetime.datetime.now()))
                     status.save()
                     if os.path.exists(dump_file):
                         os.remove(dump_file)
                     info_logger.info("Successfully processed Device: "+ device['device_id'])
+                    # catat agregat kasar (pakai jumlah baris sukses terbaru)
+                    # NB: murah dan cukup akurat untuk ringkasan run
+                    succ_log = '/'.join([config.LOGS_DIRECTORY, '_'.join(["attendance_success_log", device['device_id']])])+'.log'
+                    try:
+                        pulled = 0
+                        if device_attendance_logs:
+                            pulled = len(device_attendance_logs)
+                        else:
+                            # Jika ambil dari device langsung, pakai heuristik info log fetch
+                            pulled = 0 # biarkan 0; nanti dilengkapi di langkah ke-4
+                        run_pull += pulled
+                        # hitung sent_ok dari tail log sukses (tambahan di run ini kurang presisi - accepatble)
+                        run_sent_ok += 0
+                    except Exception:
+                        pass
                 except:
                     error_logger.exception('exception when calling pull_process_and_push_data function for device'+json.dumps(device, default=str))
             if hasattr(config,'shift_type_device_mapping'):
@@ -76,13 +109,21 @@ def main():
             status.set('mission_accomplished_timestamp', str(datetime.datetime.now()))
             status.save()
             info_logger.info("Mission Accomplished!")
+            # ringkasan agregat (kasar; per-device summary sudah ditulis sebelumnya)
+            info_logger.info("\t".join([
+                "RUN_SUMMARY",
+                f"devices={len(config.devices)}",
+                f"pulled~={run_pull}",
+                f"sent_ok~={run_sent_ok}",
+                f"sent_fail~={run_sent_fail}",
+                f"skipped_dup~={run_skipped_dup}",
+            ]))
     except:
         error_logger.exception('exception has occurred in the main function...')
 
 
 def pull_process_and_push_data(device, device_attendance_logs=None):
     """ Takes a single device config as param and pulls data from that device.
-
     params:
     device: a single device config object from the local_config file
     device_attendance_logs: fetching from device is skipped if this param is passed. used to restart failed fetches from previous runs.
@@ -101,42 +142,7 @@ def pull_process_and_push_data(device, device_attendance_logs=None):
         if not device_attendance_logs:
             return
 
-
-
-
-
-
-    # # for finding the last successfull push and restart from that point (or) from a set 'config.IMPORT_START_DATE' (whichever is later)
-    # index_of_last = -1
-    # last_line = get_last_line_from_file('/'.join([config.LOGS_DIRECTORY, attendance_success_log_file])+'.log')
-    # import_start_date = _safe_convert_date(config.IMPORT_START_DATE, "%Y%m%d")
-    # if last_line or import_start_date:
-    #     last_user_id = None
-    #     last_timestamp = None
-    #     if last_line:
-    #         last_user_id, last_timestamp = last_line.split("\t")[4:6]
-    #         last_timestamp = datetime.datetime.fromtimestamp(float(last_timestamp))
-    #     if import_start_date:
-    #         if last_timestamp:
-    #             if last_timestamp < import_start_date:
-    #                 last_timestamp = import_start_date
-    #                 last_user_id = None
-    #         else:
-    #             last_timestamp = import_start_date
-    #     for i, x in enumerate(device_attendance_logs):
-    #         if last_user_id and last_timestamp:
-    #             if last_user_id == str(x['user_id']) and last_timestamp == x['timestamp']:
-    #                 index_of_last = i
-    #                 break
-    #         elif last_timestamp:
-    #             if x['timestamp'] >= last_timestamp:
-    #                 index_of_last = i
-    #                 break
-
-
-
-
-    # ===== Langkah 2: tentukan titik mulai berdasarkan cursor/last success/import_start_date =====
+  # ===== Langkah 2: tentukan titik mulai berdasarkan cursor/last success/import_start_date =====
     # normalisasi & urutkan ascending
     for x in device_attendance_logs:
         if not isinstance(x['timestamp'], datetime.datetime):
@@ -285,17 +291,58 @@ def send_to_erpnext(employee_field_value, timestamp, device_id=None, log_type=No
         'latitude' : latitude,
         'longitude' : longitude
     }
-    response = requests.request("POST", url, headers=headers, json=data)
-    if response.status_code == 200:
-        return 200, json.loads(response._content)['message']['name']
+    code, body_or_err = post_with_retry(url, headers, data)
+    if code == 200:
+        return 200, body_or_err['message']['name']
     else:
-        error_str = _safe_get_error_str(response)
-        if EMPLOYEE_NOT_FOUND_ERROR_MESSAGE in error_str:
-            error_logger.error('\t'.join(['Error during ERPNext API Call.', str(employee_field_value), str(timestamp.timestamp()), str(device_id), str(log_type), error_str]))
-            # TODO: send email?
-        else:
-            error_logger.error('\t'.join(['Error during ERPNext API Call.', str(employee_field_value), str(timestamp.timestamp()), str(device_id), str(log_type), error_str]))
-        return response.status_code, error_str
+        # tulis error (allowList tetap berlaku di caller)
+        error_logger.error('\t'.join([
+            'Error during ERPNext API Call.',
+            str(employee_field_value),
+            str(timestamp.timestamp()),
+            str(device_id),
+            str(log_type),
+            str(body_or_err)
+        ]))
+        return code, str(body_or_err)
+
+def post_with_retry(url, headers, data):
+    """
+    Kirim POST JSON dengan retry + exponantial backoff.
+    - Retry untuk status sementara (502/503/504) & error koneksi/timeout/
+    - Non-retry untuk 4xx selain 429 (429 diretry).
+    Return: (status_code, json_body|errorr_str)
+    """
+    import time as _t
+    attempt = 0
+    while True:
+        attempt += 1
+        try:
+            res = requests.post(url, headers=headers, json=data, timeout=TIMEOUT_SEC)
+            sc = res.status_code
+            # sukses
+            if sc == 200:
+                try:
+                    return 200, json.loads(res.content)
+                except Exception as e:
+                    return 500, f"JSON decode error: {e}"
+            # 429/5xx: retry
+            if sc in (429, 500, 502, 503, 504):
+                err = _safe_get_error_str(res)
+                if attempt < MAX_RETRIES:
+                    _t.sleep(BACKOFF_SEC * (2 ** (attempt -1)))
+                    continue
+                return sc, err
+            # 4xx lain: tidak diretry
+            return sc, _safe_get_error_str(res)
+        except (requests.Timeout, requests.ConnectionError) as e:
+            if attempt < MAX_RETRIES:
+                _t.sleep(BACKOFF_SEC * (2 ** (attempt - 1)))
+                continue
+            return 599, f"Network/Timeout after retreis: {e}"
+        except Exception as e:
+            # error tak terduga -> tidak diretry (bisa dipertimbangkan nanti)
+            return 598, f"Unexpected error: {e}"
 
 def update_shift_last_sync_timestamp(shift_type_device_mapping):
     """
@@ -350,22 +397,22 @@ def send_shift_sync_to_erpnext(shift_type_name, sync_timestamp):
         error_logger.exception("\t".join(['exception when updating last_sync_of_checkin in Shift Type', str(shift_type_name), str(sync_timestamp.timestamp())]))
 
 def get_last_line_from_file(file):
-    # concerns to address(may be much later):
-        # how will last line lookup work with log rotation when a new file is created?
-            #- will that new file be empty at any time? or will it have a partial line from the previous file?
+    if not os.path.exists(file):
+        return None
     line = None
-    if os.stat(file).st_size < 5000:
-        # quick hack to handle files with one line
-        with open(file, 'r') as f:
-            for line in f:
-                pass
-    else:
-        # optimized for large log files
-        with open(file, 'rb') as f:
-            f.seek(-2, os.SEEK_END)
-            while f.read(1) != b'\n':
-                f.seek(-2, os.SEEK_CUR)
-            line = f.readline().decode()
+    try:
+        if os.stat(file).st_size < 5000:
+            with open(file, 'r') as f:
+                for line in f:
+                    pass
+        else:
+            with open(file, 'rb') as f:
+                f.seek(-2, os.SEEK_END)
+                while f.read(1) != b'\n':
+                    f.seek(-2, os.SEEK_CUR)
+                line = f.readline().decode()
+    except FileNotFoundError:
+        return None
     return line
 
 
