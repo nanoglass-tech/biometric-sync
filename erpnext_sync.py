@@ -3,6 +3,7 @@ try:
     config = _cfg.load()
 except:
     import local_config as config
+import argparse
 import requests
 import datetime
 import json
@@ -501,4 +502,31 @@ def infinite_loop(sleep_time=15):
             print(e)
 
 if __name__ == "__main__":
-    infinite_loop()
+    # infinite_loop()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--once", action="store_true", help="Jalankan satu siklus lalu keluar")
+    parser.add_argument("--lock-file", default=os.getenv("BIOSYNC_LOCK_FILE", "/tmp/biometric-sync.lock"))
+    args = parser.parse_args()
+    
+    # sederhana PID lock berbasis exclusive create/open
+    lock_path = args.lock_file
+    # pastikan parent dir ada (untuk custom path selain /tmp)
+    os.makedirs(os.path.dirname(lock_path) or ".", exist_ok=True)
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+    except FileExistsError:
+        print(f"Another instance is running (lock: {lock_path}). Exit 0.")
+        sys.exit(0)  # jangan dianggap error; biar timer nggak spam
+    
+    try:
+        if args.once:
+            main()
+        else:
+            infinite_loop()
+    finally:
+        try:
+            os.remove(lock_path)
+        except FileNotFoundError:
+            pass
