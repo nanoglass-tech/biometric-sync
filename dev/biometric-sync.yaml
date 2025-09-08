@@ -1,0 +1,42 @@
+erp:
+    url: https://demo.coppal-utama.com
+    version: 15
+
+ops:
+    pull_frequency: 20
+    logs_dir: logs
+    import_start_date:
+
+devices:
+    - device_id: ZKP01
+      ip: 192.168.100.180
+      port: 4370
+      punch_direction: AUTO
+      clear_from_device_on_fetch: false
+      latitude: 0.0
+      longitude: 0.0
+    - device_id: ZKP02
+      ip: 192.168.100.176
+      port: 43700
+      punch_direction: AUTO
+      clear_from_device_on_fetch: false
+      latitude: 0.0
+      longitude: 0.0
+
+shift_type_device_mapping:
+    - shift_type_name:
+          [
+              'Malam 17:00-22:00',
+              'Malam 23:00-04:00',
+              'Malam 23:00-07:00',
+              'Pagi 07:00-12:00',
+              'Pagi 07:00-15:00',
+              'Pagi 08:00-13:00',
+              'Pagi 08:00-16:00',
+              'Siang 12:00-17:00',
+              'Siang 15:00-23:00',
+              'Sore 15:00-20:00',
+          ]
+      related_device_id: ['ZKP01', 'ZKP02']
+
+allowed_exceptions: [1, 2, 3]
